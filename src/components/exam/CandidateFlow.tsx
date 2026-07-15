@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { UserCheck } from 'lucide-react';
-import CompanySelect from './CompanySelect';
+import CompanySelect, { type Company } from './CompanySelect';
+import ExamTypeSelect from './ExamTypeSelect';
 import ExamFaceGate from './ExamFaceGate';
 import ExamRunner from './ExamRunner';
 
@@ -10,17 +11,31 @@ interface CandidateFlowProps {
   onBack: () => void;
 }
 
-type Step = 'select_company' | 'face_gate' | 'manual_review' | 'exam';
+type Step = 'select_company' | 'select_exam_type' | 'face_gate' | 'manual_review' | 'exam';
 
-/** Orchestrates company selection -> face+liveness gate -> continuously-proctored exam. */
+/** Orchestrates company selection -> exam type selection -> face+liveness gate -> proctored exam. */
 const CandidateFlow = ({ onBack }: CandidateFlowProps) => {
   const [step, setStep] = useState<Step>('select_company');
+  const [company, setCompany] = useState<Company | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
 
   if (step === 'select_company') {
     return (
       <CompanySelect
         onBack={onBack}
+        onCompanySelected={(c) => {
+          setCompany(c);
+          setStep('select_exam_type');
+        }}
+      />
+    );
+  }
+
+  if (step === 'select_exam_type' && company) {
+    return (
+      <ExamTypeSelect
+        company={company}
+        onBack={() => setStep('select_company')}
         onSessionReady={(id) => {
           setSessionId(id);
           setStep('face_gate');

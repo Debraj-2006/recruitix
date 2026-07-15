@@ -17,6 +17,7 @@ function toSessionDto(s) {
     id: s._id.toString(),
     userId: s.userId.toString(),
     companyId: s.companyId.toString(),
+    round: s.round,
     status: s.status,
     currentRound: s.currentRound ?? null,
     faceGateAttempts: s.faceGateAttempts,
@@ -46,9 +47,15 @@ const loadOwnedSession = asyncHandler(async (req, res, next) => {
   next();
 });
 
-// Creates a new attempt for a company, or resumes an unfinished one.
+// Creates a new single-exam-type attempt for a company (Technical Assessment / Live Interview /
+// HR Simulation — internal round keys 'technical' / 'personal' / 'hr'), or resumes an unfinished
+// one of that same type. Each session covers exactly one round; candidates pick a type up front
+// rather than being carried through all three back-to-back.
 router.post('/sessions', requireAuth, asyncHandler(async (req, res) => {
-  const { companyId } = req.body ?? {};
+  const { companyId, round } = req.body ?? {};
+  if (!ROUND_ORDER.includes(round)) {
+    return res.status(400).json({ error: 'invalid_input', detail: 'round must be one of technical, personal, hr' });
+  }
   let companyObjectId;
   try {
     companyObjectId = new ObjectId(String(companyId));
@@ -60,7 +67,7 @@ router.post('/sessions', requireAuth, asyncHandler(async (req, res) => {
   const userId = new ObjectId(req.userId);
 
   const existing = await db.collection('examSessions').findOne(
-    { userId, companyId: companyObjectId, status: { $in: ACTIVE_STATUSES } },
+    { userId, companyId: companyObjectId, round, status: { $in: ACTIVE_STATUSES } },
     { sort: { createdAt: -1 } },
   );
   if (existing) return res.json({ sessionId: existing._id.toString() });
@@ -69,6 +76,7 @@ router.post('/sessions', requireAuth, asyncHandler(async (req, res) => {
   const { insertedId } = await db.collection('examSessions').insertOne({
     userId,
     companyId: companyObjectId,
+    round,
     status: 'face_gate_pending',
     currentRound: null,
     faceGateAttempts: 0,
@@ -121,7 +129,7 @@ router.post('/sessions/:id/unlock', requireAuth, loadOwnedSession, asyncHandler(
   if (unlocked) {
     await req.db.collection('examSessions').updateOne(
       { _id: req.session._id },
-      { $set: { status: 'in_progress', currentRound: 'technical', faceGatePassedAt: new Date(), startedAt: new Date() } },
+      { $set: { status: 'in_progress', currentRound: req.session.round, faceGatePassedAt: new Date(), startedAt: new Date() } },
     );
     return res.json({ unlocked: true });
   }
@@ -158,39 +166,38 @@ router.post('/sessions/:id/responses', requireAuth, loadOwnedSession, asyncHandl
   res.json({ ok: true });
 }));
 
-// Mirrors the (superseded) Supabase plan's record_round_score RPC.
+// Mirrors the (superseded) Supabase plan's record_round_score RPC. Since a session now covers
+// exactly one exam type, recording that round's score finalizes the session immediately — no
+// more advancing through technical -> personal -> hr in sequence.
 router.post('/sessions/:id/round-score', requireAuth, loadOwnedSession, asyncHandler(async (req, res) => {
   const { round, score, pct } = req.body ?? {};
   if (!ROUND_ORDER.includes(round) || typeof score !== 'number' || typeof pct !== 'number') {
     return res.status(400).json({ error: 'invalid_input' });
   }
-
-  const fieldSet = {
-    [`${round}Score`]: score,
-    [`${round}Pct`]: pct,
-  };
-  await req.db.collection('examSessions').updateOne({ _id: req.session._id }, { $set: fieldSet });
-
-  const nextIndex = ROUND_ORDER.indexOf(round) + 1;
-  const nextRound = nextIndex < ROUND_ORDER.length ? ROUND_ORDER[nextIndex] : null;
-
-  if (nextRound) {
-    await req.db.collection('examSessions').updateOne({ _id: req.session._id }, { $set: { currentRound: nextRound } });
-  } else {
-    const updated = await req.db.collection('examSessions').findOne({ _id: req.session._id });
-    const overallPct = Math.round(((updated.technicalPct ?? 0) + (updated.personalPct ?? 0) + (updated.hrPct ?? 0)) / 3);
-    await req.db.collection('examSessions').updateOne(
-      { _id: req.session._id },
-      { $set: { currentRound: null, status: 'submitted', endedAt: new Date(), overallPct } },
-    );
+  if (round !== req.session.round) {
+    return res.status(400).json({ error: 'invalid_input', detail: "round does not match this session's exam type" });
   }
+
+  await req.db.collection('examSessions').updateOne(
+    { _id: req.session._id },
+    {
+      $set: {
+        [`${round}Score`]: score,
+        [`${round}Pct`]: pct,
+        currentRound: null,
+        status: 'submitted',
+        endedAt: new Date(),
+        overallPct: pct,
+      },
+    },
+  );
 
   res.json({ ok: true });
 }));
 
 router.post('/sessions/:id/auto-submit', requireAuth, loadOwnedSession, asyncHandler(async (req, res) => {
   const s = req.session;
-  const overallPct = Math.round(((s.technicalPct ?? 0) + (s.personalPct ?? 0) + (s.hrPct ?? 0)) / 3);
+  const overallPct = s[`${s.round}Pct`] ?? 0;
   await req.db.collection('examSessions').updateOne(
     { _id: s._id },
     { $set: { status: 'auto_submitted', endedAt: new Date(), overallPct } },
@@ -216,13 +223,13 @@ router.get('/sessions/:id/results', requireAuth, loadOwnedSession, asyncHandler(
   const questions = await req.db.collection('questionBank').find({ _id: { $in: questionIds } }).toArray();
   const questionById = new Map(questions.map((q) => [q._id.toString(), q]));
 
-  // Group by round+category so the client can flag specific weak spots, not just round totals.
+  // Every response belongs to this session's single round, so group by category only.
   const categoryTotals = new Map();
   for (const r of responses) {
     const q = r.questionId ? questionById.get(r.questionId.toString()) : null;
     if (!q) continue;
-    const key = `${r.round}:${q.category ?? 'General'}`;
-    const entry = categoryTotals.get(key) ?? { round: r.round, category: q.category ?? 'General', earned: 0, possible: 0 };
+    const key = q.category ?? 'General';
+    const entry = categoryTotals.get(key) ?? { category: key, earned: 0, possible: 0 };
     entry.earned += r.score;
     entry.possible += q.points;
     categoryTotals.set(key, entry);
@@ -232,16 +239,16 @@ router.get('/sessions/:id/results', requireAuth, loadOwnedSession, asyncHandler(
     pct: c.possible > 0 ? Math.round((c.earned / c.possible) * 100) : 0,
   }));
 
+  const pct = s[`${s.round}Pct`] ?? s.overallPct ?? 0;
+  const score = s[`${s.round}Score`] ?? 0;
+
   res.json({
     status: s.status,
     company: company ? { name: company.name, passThresholdPct: company.passThresholdPct } : null,
-    overallPct: s.overallPct,
-    passed: company && s.overallPct != null ? s.overallPct >= company.passThresholdPct : null,
-    rounds: {
-      technical: { score: s.technicalScore, pct: s.technicalPct },
-      personal: { score: s.personalScore, pct: s.personalPct },
-      hr: { score: s.hrScore, pct: s.hrPct },
-    },
+    round: s.round,
+    score,
+    pct,
+    passed: company ? pct >= company.passThresholdPct : null,
     categories,
     integrityScore: s.integrityScore,
     violations: violations.map((v) => ({ type: v.type, severity: v.severity, message: v.message, createdAt: v.createdAt })),

@@ -3,6 +3,21 @@ import { calculateSemanticSimilarity } from '@/utils/semanticSimilarity';
 
 export type RoundName = 'technical' | 'personal' | 'hr';
 
+// Candidate-facing names for what are internally still the 'technical' / 'personal' / 'hr'
+// round keys (unchanged to match existing seeded questionBank.round values and the company
+// duration/score field names, e.g. personalDurationMin) — only the display label changed.
+export const EXAM_TYPE_LABELS: Record<RoundName, string> = {
+  technical: 'Technical Assessment',
+  personal: 'Live Interview',
+  hr: 'HR Simulation',
+};
+
+export const EXAM_TYPE_DESCRIPTIONS: Record<RoundName, string> = {
+  technical: 'MCQs and coding questions covering DSA, aptitude, and quantitative reasoning.',
+  personal: 'Coding problems under continuous AI-powered proctoring and behavior monitoring.',
+  hr: 'Behavioral questions evaluating communication and situational judgment.',
+};
+
 export interface QuestionBankRow {
   id: string;
   round: RoundName;

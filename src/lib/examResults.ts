@@ -2,7 +2,6 @@ import { apiGet } from './api';
 import type { RoundName } from './examRounds';
 
 export interface CategoryBreakdown {
-  round: RoundName;
   category: string;
   earned: number;
   possible: number;
@@ -12,9 +11,10 @@ export interface CategoryBreakdown {
 export interface ExamResultsData {
   status: 'submitted' | 'auto_submitted';
   company: { name: string; passThresholdPct: number } | null;
-  overallPct: number | null;
+  round: RoundName;
+  score: number;
+  pct: number;
   passed: boolean | null;
-  rounds: Record<RoundName, { score: number | null; pct: number | null }>;
   categories: CategoryBreakdown[];
   integrityScore: number;
   violations: { type: string; severity: string; message: string; createdAt: string }[];

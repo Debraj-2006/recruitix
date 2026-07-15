@@ -2,21 +2,14 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Progress } from '@/components/ui/progress';
 import { CheckCircle2, XCircle, ShieldAlert, TrendingUp, TrendingDown } from 'lucide-react';
 import { fetchExamResults, tipForCategory, isWeakArea, type ExamResultsData } from '@/lib/examResults';
-import type { RoundName } from '@/lib/examRounds';
+import { EXAM_TYPE_LABELS } from '@/lib/examRounds';
 
 interface ExamResultsProps {
   sessionId: string;
   onContinue: () => void;
 }
-
-const ROUND_TITLES: Record<RoundName, string> = {
-  technical: 'Technical Round',
-  personal: 'Personal Round',
-  hr: 'HR Round',
-};
 
 const pctColor = (pct: number) => (pct >= 75 ? 'text-green-400' : pct >= 60 ? 'text-amber-400' : 'text-red-400');
 
@@ -53,7 +46,6 @@ const ExamResults = ({ sessionId, onContinue }: ExamResultsProps) => {
     );
   }
 
-  const overallPct = data.overallPct ?? 0;
   const weakAreas = data.categories.filter(isWeakArea).sort((a, b) => a.pct - b.pct);
   const strongAreas = data.categories.filter((c) => !isWeakArea(c)).sort((a, b) => b.pct - a.pct);
 
@@ -67,6 +59,7 @@ const ExamResults = ({ sessionId, onContinue }: ExamResultsProps) => {
             ) : (
               <XCircle className="w-14 h-14 text-red-400 mx-auto" />
             )}
+            <Badge className="mx-auto bg-slate-800 text-white">{EXAM_TYPE_LABELS[data.round]}</Badge>
             <CardTitle className="text-white text-2xl">
               {data.passed ? 'You Passed' : 'Not Cleared'}
               {data.company ? ` — ${data.company.name}` : ''}
@@ -74,31 +67,10 @@ const ExamResults = ({ sessionId, onContinue }: ExamResultsProps) => {
             <CardDescription className="text-slate-300">
               {data.status === 'auto_submitted'
                 ? 'This attempt was auto-submitted due to repeated proctoring flags and is pending review.'
-                : `Overall score: ${overallPct}%${data.company ? ` (pass mark ${data.company.passThresholdPct}%)` : ''}`}
+                : `Score: ${data.pct}%${data.company ? ` (pass mark ${data.company.passThresholdPct}%)` : ''}`}
             </CardDescription>
-            <div className={`text-5xl font-bold ${pctColor(overallPct)}`}>{overallPct}%</div>
+            <div className={`text-5xl font-bold ${pctColor(data.pct)}`}>{data.pct}%</div>
           </CardHeader>
-        </Card>
-
-        <Card className="bg-slate-900 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white text-lg">Round Breakdown</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {(Object.keys(ROUND_TITLES) as RoundName[]).map((round) => {
-              const r = data.rounds[round];
-              const pct = r?.pct ?? 0;
-              return (
-                <div key={round} className="space-y-1">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-300">{ROUND_TITLES[round]}</span>
-                    <span className={pctColor(pct)}>{r?.pct != null ? `${pct}%` : '—'}</span>
-                  </div>
-                  <Progress value={pct} className="h-2" />
-                </div>
-              );
-            })}
-          </CardContent>
         </Card>
 
         {weakAreas.length > 0 && (
@@ -113,11 +85,9 @@ const ExamResults = ({ sessionId, onContinue }: ExamResultsProps) => {
             </CardHeader>
             <CardContent className="space-y-4">
               {weakAreas.map((c) => (
-                <div key={`${c.round}:${c.category}`} className="bg-amber-900/10 border border-amber-500/30 rounded-lg p-3 space-y-2">
+                <div key={c.category} className="bg-amber-900/10 border border-amber-500/30 rounded-lg p-3 space-y-2">
                   <div className="flex justify-between items-center">
-                    <span className="text-white font-medium">
-                      {c.category} <span className="text-slate-400 font-normal">· {ROUND_TITLES[c.round]}</span>
-                    </span>
+                    <span className="text-white font-medium">{c.category}</span>
                     <Badge className="bg-amber-900/40 text-amber-300 border border-amber-500/40">{c.pct}%</Badge>
                   </div>
                   <p className="text-slate-300 text-sm">{tipForCategory(c.category)}</p>
@@ -136,7 +106,7 @@ const ExamResults = ({ sessionId, onContinue }: ExamResultsProps) => {
             </CardHeader>
             <CardContent className="flex flex-wrap gap-2">
               {strongAreas.map((c) => (
-                <Badge key={`${c.round}:${c.category}`} className="bg-green-900/30 text-green-300 border border-green-500/30">
+                <Badge key={c.category} className="bg-green-900/30 text-green-300 border border-green-500/30">
                   {c.category} · {c.pct}%
                 </Badge>
               ))}

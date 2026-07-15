@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Building2, ArrowRight } from 'lucide-react';
-import { apiGet, apiPost } from '@/lib/api';
+import { apiGet } from '@/lib/api';
 
-interface Company {
+export interface Company {
   id: string;
   name: string;
   slug: string;
@@ -15,15 +15,14 @@ interface Company {
 }
 
 interface CompanySelectProps {
-  onSessionReady: (sessionId: string) => void;
+  onCompanySelected: (company: Company) => void;
   onBack: () => void;
 }
 
-/** Lists active companies; picking one creates (or resumes) an exam session and hands off to the face gate. */
-const CompanySelect = ({ onSessionReady, onBack }: CompanySelectProps) => {
+/** Lists active companies; picking one moves on to choosing which exam type to take. */
+const CompanySelect = ({ onCompanySelected, onBack }: CompanySelectProps) => {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
-  const [starting, setStarting] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -32,19 +31,6 @@ const CompanySelect = ({ onSessionReady, onBack }: CompanySelectProps) => {
       .catch((err) => setError(err instanceof Error ? err.message : 'Could not load companies.'))
       .finally(() => setLoading(false));
   }, []);
-
-  const handleSelect = async (company: Company) => {
-    setStarting(company.id);
-    setError('');
-    try {
-      // Server resumes an unfinished attempt for this company if one exists, else creates one.
-      const { sessionId } = await apiPost<{ sessionId: string }>('/api/exam/sessions', { companyId: company.id });
-      onSessionReady(sessionId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not start this exam. Please try again.');
-      setStarting(null);
-    }
-  };
 
   return (
     <div className="min-h-screen bg-black p-4">
@@ -75,11 +61,10 @@ const CompanySelect = ({ onSessionReady, onBack }: CompanySelectProps) => {
                 </CardHeader>
                 <CardContent>
                   <Button
-                    onClick={() => handleSelect(company)}
-                    disabled={starting !== null}
+                    onClick={() => onCompanySelected(company)}
                     className="w-full bg-blue-600 hover:bg-blue-700 text-white"
                   >
-                    {starting === company.id ? 'Starting...' : 'Start Exam'}
+                    Choose Exam
                     <ArrowRight className="w-4 h-4 ml-2" />
                   </Button>
                 </CardContent>

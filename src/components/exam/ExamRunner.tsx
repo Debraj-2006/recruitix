@@ -5,7 +5,7 @@ import { apiGet, apiPost } from '@/lib/api';
 import { loadFaceModels, getFaceDescriptor } from '@/lib/faceEngine';
 import { loadFaceLandmarker, detectFrame } from '@/lib/faceMesh';
 import { createStrikeTracker, createViolationPolicy, type ConfirmedViolation } from '@/utils/proctorEngine';
-import { fetchRoundQuestions, submitRoundResponses, recordRoundScore, scoreAnswer, type QuestionBankRow, type RoundName } from '@/lib/examRounds';
+import { fetchRoundQuestions, submitRoundResponses, recordRoundScore, scoreAnswer, EXAM_TYPE_LABELS, type QuestionBankRow, type RoundName } from '@/lib/examRounds';
 import RoundView from './RoundView';
 import ExamResults from './ExamResults';
 
@@ -31,12 +31,6 @@ const IDENTITY_CHECK_MS = 8000;
 const MAX_YAW_DEG = 30;
 const MAX_PITCH_DEG = 25;
 
-const ROUND_TITLES: Record<RoundName, string> = {
-  technical: 'Technical Round',
-  personal: 'Personal Round',
-  hr: 'HR Round',
-};
-
 function captureBase64Jpeg(video: HTMLVideoElement, canvas: HTMLCanvasElement): string | null {
   canvas.width = video.videoWidth || 320;
   canvas.height = video.videoHeight || 240;
@@ -48,9 +42,8 @@ function captureBase64Jpeg(video: HTMLVideoElement, canvas: HTMLCanvasElement): 
 }
 
 /**
- * Owns the camera + continuous proctoring for the whole exam session (never torn down
- * between rounds), and sequentially renders Technical -> Personal -> HR content sourced
- * from the question bank, persisting every answer to examResponses.
+ * Owns the camera + continuous proctoring for the exam session and renders the single exam
+ * type (technical/personal/hr) the candidate chose, persisting every answer to examResponses.
  */
 const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -251,10 +244,10 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
         </div>
       )}
 
-      <Badge className="fixed top-4 left-4 z-50 bg-slate-800 text-white">{ROUND_TITLES[session.currentRound]}</Badge>
+      <Badge className="fixed top-4 left-4 z-50 bg-slate-800 text-white">{EXAM_TYPE_LABELS[session.currentRound]}</Badge>
 
       <RoundView
-        title={ROUND_TITLES[session.currentRound]}
+        title={EXAM_TYPE_LABELS[session.currentRound]}
         durationMin={durationMin}
         questions={questions}
         onSubmit={(result) => handleRoundSubmit(session.currentRound as RoundName, result)}
