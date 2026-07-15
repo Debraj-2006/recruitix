@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import { apiGet, apiPost } from '@/lib/api';
 import { loadFaceModels, getFaceDescriptor } from '@/lib/faceEngine';
 import { loadFaceLandmarker, detectFrame } from '@/lib/faceMesh';
 import { createStrikeTracker, createViolationPolicy, type ConfirmedViolation } from '@/utils/proctorEngine';
 import { fetchRoundQuestions, submitRoundResponses, recordRoundScore, scoreAnswer, type QuestionBankRow, type RoundName } from '@/lib/examRounds';
 import RoundView from './RoundView';
+import ExamResults from './ExamResults';
 
 interface ExamRunnerProps {
   sessionId: string;
@@ -218,28 +218,7 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
   };
 
   if (ended) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center p-4">
-        <Card className="w-full max-w-md bg-slate-900 border-slate-700">
-          <CardHeader className="text-center space-y-2">
-            <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto" />
-            <CardTitle className="text-white">
-              {ended === 'auto_submitted' ? 'Exam Auto-Submitted' : 'Exam Submitted'}
-            </CardTitle>
-            <CardDescription className="text-slate-300">
-              {ended === 'auto_submitted'
-                ? 'Your exam was automatically submitted due to repeated proctoring flags. A human reviewer will check the recorded evidence.'
-                : 'Your responses have been recorded.'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <button onClick={onExamComplete} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg">
-              Continue
-            </button>
-          </CardContent>
-        </Card>
-      </div>
-    );
+    return <ExamResults sessionId={sessionId} onContinue={onExamComplete} />;
   }
 
   if (loading || !session?.currentRound || !durations) {

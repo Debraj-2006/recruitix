@@ -198,6 +198,56 @@ router.post('/sessions/:id/auto-submit', requireAuth, loadOwnedSession, asyncHan
   res.json({ ok: true });
 }));
 
+const SUBMITTED_STATUSES = ['submitted', 'auto_submitted'];
+
+router.get('/sessions/:id/results', requireAuth, loadOwnedSession, asyncHandler(async (req, res) => {
+  const s = req.session;
+  if (!SUBMITTED_STATUSES.includes(s.status)) {
+    return res.status(400).json({ error: 'not_submitted' });
+  }
+
+  const [company, responses, violations] = await Promise.all([
+    req.db.collection('companies').findOne({ _id: s.companyId }),
+    req.db.collection('examResponses').find({ sessionId: s._id }).toArray(),
+    req.db.collection('violations').find({ sessionId: s._id }).toArray(),
+  ]);
+
+  const questionIds = responses.map((r) => r.questionId).filter(Boolean);
+  const questions = await req.db.collection('questionBank').find({ _id: { $in: questionIds } }).toArray();
+  const questionById = new Map(questions.map((q) => [q._id.toString(), q]));
+
+  // Group by round+category so the client can flag specific weak spots, not just round totals.
+  const categoryTotals = new Map();
+  for (const r of responses) {
+    const q = r.questionId ? questionById.get(r.questionId.toString()) : null;
+    if (!q) continue;
+    const key = `${r.round}:${q.category ?? 'General'}`;
+    const entry = categoryTotals.get(key) ?? { round: r.round, category: q.category ?? 'General', earned: 0, possible: 0 };
+    entry.earned += r.score;
+    entry.possible += q.points;
+    categoryTotals.set(key, entry);
+  }
+  const categories = Array.from(categoryTotals.values()).map((c) => ({
+    ...c,
+    pct: c.possible > 0 ? Math.round((c.earned / c.possible) * 100) : 0,
+  }));
+
+  res.json({
+    status: s.status,
+    company: company ? { name: company.name, passThresholdPct: company.passThresholdPct } : null,
+    overallPct: s.overallPct,
+    passed: company && s.overallPct != null ? s.overallPct >= company.passThresholdPct : null,
+    rounds: {
+      technical: { score: s.technicalScore, pct: s.technicalPct },
+      personal: { score: s.personalScore, pct: s.personalPct },
+      hr: { score: s.hrScore, pct: s.hrPct },
+    },
+    categories,
+    integrityScore: s.integrityScore,
+    violations: violations.map((v) => ({ type: v.type, severity: v.severity, message: v.message, createdAt: v.createdAt })),
+  });
+}));
+
 router.post('/sessions/:id/violations', requireAuth, loadOwnedSession, asyncHandler(async (req, res) => {
   const { type, severity, message, snapshotBase64 } = req.body ?? {};
   if (!type || !severity || !message) return res.status(400).json({ error: 'invalid_input' });
