@@ -31,6 +31,7 @@ const PRESENCE_CHECK_MS = 1000;
 const IDENTITY_CHECK_MS = 8000;
 const MAX_YAW_DEG = 30;
 const MAX_PITCH_DEG = 25;
+const NO_FACE_WARNINGS_BEFORE_CANCEL = 3;
 
 function captureBase64Jpeg(video: HTMLVideoElement, canvas: HTMLCanvasElement): string | null {
   canvas.width = video.videoWidth || 320;
@@ -59,6 +60,7 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const strikeTracker = useRef(createStrikeTracker());
   const violationPolicy = useRef(createViolationPolicy());
+  const noFaceCount = useRef(0);
   const presenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const identityIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const endedRef = useRef(false);
@@ -72,6 +74,40 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
   const recordViolation = useCallback(
     async (violation: ConfirmedViolation) => {
       if (endedRef.current) return;
+
+      // Face-not-visible gets its own dedicated 3-strike cancellation, independent of the
+      // general mixed-violation policy below (which still governs multiple-faces, looking-away,
+      // identity-mismatch, and tab-hidden at their existing warn/auto-submit thresholds).
+      if (violation.type === 'NO_FACE') {
+        noFaceCount.current += 1;
+        const count = noFaceCount.current;
+        const cancelling = count >= NO_FACE_WARNINGS_BEFORE_CANCEL;
+        const displayed: ConfirmedViolation = {
+          ...violation,
+          message: cancelling
+            ? `Face not visible (warning ${count} of ${NO_FACE_WARNINGS_BEFORE_CANCEL}) — exam cancelled.`
+            : `Warning ${count} of ${NO_FACE_WARNINGS_BEFORE_CANCEL}: face not visible. The exam is cancelled after ${NO_FACE_WARNINGS_BEFORE_CANCEL} such warnings.`,
+        };
+        setLiveViolations((prev) => [...prev, displayed]);
+
+        if (!canvasRef.current) canvasRef.current = document.createElement('canvas');
+        const snapshotBase64 = videoRef.current ? captureBase64Jpeg(videoRef.current, canvasRef.current) : null;
+        await apiPost(`/api/exam/sessions/${sessionId}/violations`, {
+          type: violation.type,
+          severity: violation.severity,
+          message: displayed.message,
+          snapshotBase64,
+        });
+
+        if (cancelling) {
+          endedRef.current = true;
+          stopEverything();
+          await apiPost(`/api/exam/sessions/${sessionId}/auto-submit`);
+          setEnded('auto_submitted');
+        }
+        return;
+      }
+
       setLiveViolations((prev) => [...prev, violation]);
 
       if (!canvasRef.current) canvasRef.current = document.createElement('canvas');
