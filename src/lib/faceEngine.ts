@@ -41,7 +41,10 @@ export function loadFaceModels(): Promise<void> {
   return modelsPromise;
 }
 
-const DETECTOR_OPTIONS = new faceapi.TinyFaceDetectorOptions();
+// Smaller inputSize (default is 416) cuts CPU-backend inference time drastically — matters when
+// webgl isn't usable and ensureBackend() has fallen back to 'cpu', where full-size detection can
+// take seconds per frame. Still plenty accurate for a single, close-up, front-facing webcam face.
+const DETECTOR_OPTIONS = new faceapi.TinyFaceDetectorOptions({ inputSize: 224 });
 
 /** Full descriptor extraction — used for enrollment and identity (re-)verification. */
 export async function getFaceDescriptor(video: HTMLVideoElement): Promise<Float32Array | null> {
@@ -112,6 +115,24 @@ export interface CaptureOptions {
   onGuidance?: (reason: FrameQualityReason | null) => void;
 }
 
+const DETECTION_TIMEOUT_MS = 5000;
+const TIMED_OUT_QUALITY: FrameQuality = { ok: false, reason: 'no_face' };
+
+/**
+ * Bounds a single quality check to DETECTION_TIMEOUT_MS. Without this, a slow CPU-backend
+ * inference (or a stalled tfjs op) leaves assessFrameQuality's promise pending indefinitely —
+ * the retry loop below just awaits it forever, so the UI shows 0% progress with no guidance
+ * and no error, looking identical to a hard freeze. Racing it against a timeout guarantees the
+ * loop always advances to either a real guidance message or, after enough retries, a clear
+ * "could not get a clear view" error instead of silent nothing.
+ */
+function assessFrameQualityWithTimeout(video: HTMLVideoElement): Promise<FrameQuality> {
+  return Promise.race([
+    assessFrameQuality(video),
+    new Promise<FrameQuality>((resolve) => setTimeout(() => resolve(TIMED_OUT_QUALITY), DETECTION_TIMEOUT_MS)),
+  ]);
+}
+
 /**
  * Enrollment capture: 3-5 quality-gated samples ~1s apart, averaged into one template.
  * Each sample slot retries (with guidance callback) until quality passes, rather than
@@ -126,7 +147,7 @@ export async function captureAveragedDescriptor(
   for (let i = 0; i < samples; i++) {
     let attempt = 0;
     for (;;) {
-      const quality = await assessFrameQuality(video);
+      const quality = await assessFrameQualityWithTimeout(video);
       if (quality.ok) {
         onGuidance?.(null);
         break;

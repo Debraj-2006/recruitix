@@ -68,6 +68,7 @@ const EnrollFace = ({ onEnrolled }: EnrollFaceProps) => {
 
     if (!videoRef.current) return;
     setStatus('capturing');
+    setGuidance('Analyzing your face...');
 
     try {
       let samplesDone = 0;
