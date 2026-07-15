@@ -8,6 +8,13 @@ export interface CategoryBreakdown {
   pct: number;
 }
 
+export interface InterviewFeedback {
+  score: number;
+  summary: string;
+  strengths: string[];
+  areasToImprove: string[];
+}
+
 export interface ExamResultsData {
   status: 'submitted' | 'auto_submitted';
   company: { name: string; passThresholdPct: number } | null;
@@ -16,6 +23,7 @@ export interface ExamResultsData {
   pct: number;
   passed: boolean | null;
   categories: CategoryBreakdown[];
+  interviewFeedback: InterviewFeedback | null;
   integrityScore: number;
   violations: { type: string; severity: string; message: string; createdAt: string }[];
 }

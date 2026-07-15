@@ -7,6 +7,7 @@ import { loadFaceLandmarker, detectFrame } from '@/lib/faceMesh';
 import { createStrikeTracker, createViolationPolicy, type ConfirmedViolation } from '@/utils/proctorEngine';
 import { fetchRoundQuestions, submitRoundResponses, recordRoundScore, scoreAnswer, EXAM_TYPE_LABELS, type QuestionBankRow, type RoundName } from '@/lib/examRounds';
 import RoundView from './RoundView';
+import LiveInterviewRound from './LiveInterviewRound';
 import ExamResults from './ExamResults';
 
 interface ExamRunnerProps {
@@ -181,9 +182,10 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // Fetch this round's questions whenever currentRound changes.
+  // Fetch this round's questions whenever currentRound changes. The Live Interview round
+  // ('personal') is Claude-driven conversation, not question-bank content — nothing to fetch.
   useEffect(() => {
-    if (!session?.companyId || !session.currentRound) return;
+    if (!session?.companyId || !session.currentRound || session.currentRound === 'personal') return;
     fetchRoundQuestions(session.companyId, session.currentRound).then(setQuestions);
   }, [session?.companyId, session?.currentRound]);
 
@@ -246,12 +248,19 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
 
       <Badge className="fixed top-4 left-4 z-50 bg-slate-800 text-white">{EXAM_TYPE_LABELS[session.currentRound]}</Badge>
 
-      <RoundView
-        title={EXAM_TYPE_LABELS[session.currentRound]}
-        durationMin={durationMin}
-        questions={questions}
-        onSubmit={(result) => handleRoundSubmit(session.currentRound as RoundName, result)}
-      />
+      {session.currentRound === 'personal' ? (
+        <LiveInterviewRound
+          sessionId={sessionId}
+          onSubmit={(result) => handleRoundSubmit(session.currentRound as RoundName, result)}
+        />
+      ) : (
+        <RoundView
+          title={EXAM_TYPE_LABELS[session.currentRound]}
+          durationMin={durationMin}
+          questions={questions}
+          onSubmit={(result) => handleRoundSubmit(session.currentRound as RoundName, result)}
+        />
+      )}
     </div>
   );
 };

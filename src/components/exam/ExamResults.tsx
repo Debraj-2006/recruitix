@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { CheckCircle2, XCircle, ShieldAlert, TrendingUp, TrendingDown } from 'lucide-react';
+import { CheckCircle2, XCircle, ShieldAlert, TrendingUp, TrendingDown, MessageSquare } from 'lucide-react';
 import { fetchExamResults, tipForCategory, isWeakArea, type ExamResultsData } from '@/lib/examResults';
 import { EXAM_TYPE_LABELS } from '@/lib/examRounds';
 
@@ -72,6 +72,39 @@ const ExamResults = ({ sessionId, onContinue }: ExamResultsProps) => {
             <div className={`text-5xl font-bold ${pctColor(data.pct)}`}>{data.pct}%</div>
           </CardHeader>
         </Card>
+
+        {data.interviewFeedback && (
+          <Card className="bg-slate-900 border-slate-700">
+            <CardHeader>
+              <CardTitle className="text-white text-lg flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-blue-400" /> Interviewer Feedback
+              </CardTitle>
+              <CardDescription className="text-slate-300">{data.interviewFeedback.summary}</CardDescription>
+            </CardHeader>
+            <CardContent className="grid sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <p className="text-green-400 text-sm font-medium flex items-center gap-1">
+                  <TrendingUp className="w-4 h-4" /> Strengths
+                </p>
+                <ul className="text-slate-300 text-sm list-disc list-inside space-y-1">
+                  {data.interviewFeedback.strengths.map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="space-y-2">
+                <p className="text-amber-400 text-sm font-medium flex items-center gap-1">
+                  <TrendingDown className="w-4 h-4" /> Areas to Improve
+                </p>
+                <ul className="text-slate-300 text-sm list-disc list-inside space-y-1">
+                  {data.interviewFeedback.areasToImprove.map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ul>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {weakAreas.length > 0 && (
           <Card className="bg-slate-900 border-amber-500/30">

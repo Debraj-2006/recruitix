@@ -4,6 +4,7 @@ import { getDb, getSnapshotBucket } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { isValidEmbedding, euclideanDistance, THRESHOLD } from '../lib/faceMatch.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
+import { generateInterviewerTurn, generateInterviewEvaluation } from '../lib/interviewer.js';
 
 const router = express.Router();
 
@@ -195,6 +196,66 @@ router.post('/sessions/:id/round-score', requireAuth, loadOwnedSession, asyncHan
   res.json({ ok: true });
 }));
 
+// AI-driven Live Interview (round === 'personal'): a Claude-conducted conversational interview,
+// one question at a time, transcribed by the candidate's browser and spoken back via TTS. The
+// full exchange is persisted in interviewTranscripts so /finish can grade the whole conversation.
+router.post('/sessions/:id/interview/start', requireAuth, loadOwnedSession, asyncHandler(async (req, res) => {
+  if (req.session.round !== 'personal') return res.status(400).json({ error: 'invalid_input', detail: 'not an interview session' });
+
+  const existing = await req.db.collection('interviewTranscripts').findOne({ sessionId: req.session._id });
+  if (existing) {
+    const last = existing.messages[existing.messages.length - 1];
+    if (last?.role === 'assistant') return res.json({ reply: last.text, interviewComplete: false });
+  }
+
+  const messages = [{ role: 'user', text: 'Begin the interview.', createdAt: new Date() }];
+  const turn = await generateInterviewerTurn(messages);
+  messages.push({ role: 'assistant', text: turn.reply, createdAt: new Date() });
+
+  await req.db.collection('interviewTranscripts').updateOne(
+    { sessionId: req.session._id },
+    { $set: { sessionId: req.session._id, userId: req.session.userId, messages, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+    { upsert: true },
+  );
+  res.json({ reply: turn.reply, interviewComplete: turn.interviewComplete });
+}));
+
+router.post('/sessions/:id/interview/respond', requireAuth, loadOwnedSession, asyncHandler(async (req, res) => {
+  const { answer } = req.body ?? {};
+  if (typeof answer !== 'string' || !answer.trim()) return res.status(400).json({ error: 'invalid_input' });
+
+  const transcript = await req.db.collection('interviewTranscripts').findOne({ sessionId: req.session._id });
+  if (!transcript) return res.status(404).json({ error: 'not_found' });
+
+  transcript.messages.push({ role: 'user', text: answer, createdAt: new Date() });
+  const turn = await generateInterviewerTurn(transcript.messages);
+  transcript.messages.push({ role: 'assistant', text: turn.reply, createdAt: new Date() });
+
+  await req.db.collection('interviewTranscripts').updateOne(
+    { sessionId: req.session._id },
+    { $set: { messages: transcript.messages, updatedAt: new Date() } },
+  );
+  res.json({ reply: turn.reply, interviewComplete: turn.interviewComplete });
+}));
+
+router.post('/sessions/:id/interview/finish', requireAuth, loadOwnedSession, asyncHandler(async (req, res) => {
+  const transcript = await req.db.collection('interviewTranscripts').findOne({ sessionId: req.session._id });
+  if (!transcript || transcript.messages.length < 2) {
+    return res.status(400).json({ error: 'invalid_input', detail: 'interview has no content yet' });
+  }
+
+  const evaluation = await generateInterviewEvaluation(transcript.messages);
+  await req.db.collection('examSessions').updateOne({ _id: req.session._id }, { $set: { personalFeedback: evaluation } });
+
+  res.json({
+    score: evaluation.score,
+    pct: evaluation.score,
+    summary: evaluation.summary,
+    strengths: evaluation.strengths,
+    areasToImprove: evaluation.areasToImprove,
+  });
+}));
+
 router.post('/sessions/:id/auto-submit', requireAuth, loadOwnedSession, asyncHandler(async (req, res) => {
   const s = req.session;
   const overallPct = s[`${s.round}Pct`] ?? 0;
@@ -250,6 +311,7 @@ router.get('/sessions/:id/results', requireAuth, loadOwnedSession, asyncHandler(
     pct,
     passed: company ? pct >= company.passThresholdPct : null,
     categories,
+    interviewFeedback: s.round === 'personal' ? (s.personalFeedback ?? null) : null,
     integrityScore: s.integrityScore,
     violations: violations.map((v) => ({ type: v.type, severity: v.severity, message: v.message, createdAt: v.createdAt })),
   });
