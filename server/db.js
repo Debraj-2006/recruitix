@@ -12,7 +12,14 @@ function getClientPromise() {
     if (!uri) {
       throw new Error('Missing MONGODB_URI environment variable.');
     }
-    clientPromise = new MongoClient(uri).connect();
+    // maxIdleTimeMS keeps pooled sockets shorter-lived than Atlas's own idle
+    // timeout, so a frozen-then-thawed serverless invocation doesn't try to
+    // reuse a connection Atlas has already torn down (which surfaces as a
+    // TLS "internal_error" alert rather than a clean disconnect).
+    clientPromise = new MongoClient(uri, { maxIdleTimeMS: 10000 }).connect().catch((err) => {
+      clientPromise = null;
+      throw err;
+    });
   }
   return clientPromise;
 }

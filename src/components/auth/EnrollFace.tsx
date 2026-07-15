@@ -11,7 +11,7 @@ interface EnrollFaceProps {
   onEnrolled: () => Promise<void> | void;
 }
 
-type Status = 'loading_models' | 'idle' | 'capturing' | 'complete' | 'error';
+type Status = 'loading_models' | 'idle' | 'requesting_camera' | 'capturing' | 'complete' | 'error';
 
 const SAMPLES = 5;
 
@@ -24,30 +24,23 @@ const EnrollFace = ({ onEnrolled }: EnrollFaceProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
+  // Preload the face-api models in the background — no permission prompt involved — but never
+  // touch getUserMedia here. Camera access is only requested from startEnrollment(), in direct
+  // response to the user clicking "Start Enrollment", so simply landing on this screen (e.g. a
+  // stale session with faceEnrolled still false) never surprises the user with a camera prompt.
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-        });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        streamRef.current = stream;
-        if (videoRef.current) videoRef.current.srcObject = stream;
-
-        await loadFaceModels();
+    loadFaceModels()
+      .then(() => {
         if (!cancelled) setStatus('idle');
-      } catch (err) {
+      })
+      .catch((err) => {
         if (!cancelled) {
-          setErrorMessage(err instanceof Error ? err.message : 'Camera access failed.');
+          setErrorMessage(err instanceof Error ? err.message : 'Failed to load face models.');
           setStatus('error');
         }
-      }
-    })();
+      });
 
     return () => {
       cancelled = true;
@@ -56,10 +49,25 @@ const EnrollFace = ({ onEnrolled }: EnrollFaceProps) => {
   }, []);
 
   const startEnrollment = async () => {
-    if (!videoRef.current) return;
-    setStatus('capturing');
+    setStatus('requesting_camera');
     setProgress(0);
     setGuidance(null);
+    setErrorMessage('');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+      });
+      streamRef.current = stream;
+      if (videoRef.current) videoRef.current.srcObject = stream;
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Camera access failed.');
+      setStatus('error');
+      return;
+    }
+
+    if (!videoRef.current) return;
+    setStatus('capturing');
 
     try {
       let samplesDone = 0;
@@ -153,17 +161,19 @@ const EnrollFace = ({ onEnrolled }: EnrollFaceProps) => {
           ) : (
             <Button
               onClick={startEnrollment}
-              disabled={status === 'loading_models' || status === 'capturing'}
+              disabled={status === 'loading_models' || status === 'requesting_camera' || status === 'capturing'}
               className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-lg"
             >
               <Camera className="w-4 h-4 mr-2" />
               {status === 'loading_models'
                 ? 'Loading face models...'
-                : status === 'capturing'
-                  ? 'Capturing...'
-                  : status === 'error'
-                    ? 'Retry Enrollment'
-                    : 'Start Enrollment'}
+                : status === 'requesting_camera'
+                  ? 'Waiting for camera permission...'
+                  : status === 'capturing'
+                    ? 'Capturing...'
+                    : status === 'error'
+                      ? 'Retry Enrollment'
+                      : 'Start Enrollment'}
             </Button>
           )}
         </CardContent>

@@ -4,14 +4,39 @@ const MODEL_URL = '/models';
 
 let modelsPromise: Promise<void> | null = null;
 
+// face-api's bundled tfjs exposes setBackend/ready at runtime, but its hand-written .d.ts
+// omits them from the curated export list — cast narrowly to route around the gap.
+const tf = faceapi.tf as unknown as { setBackend(name: string): Promise<boolean>; ready(): Promise<void> };
+
+/**
+ * Pins the bundled tfjs to 'webgl', falling back to 'cpu' if webgl is unavailable (locked-down
+ * exam browsers, VMs, hardware acceleration disabled, etc). Never lets tfjs auto-select: left
+ * alone, its default priority order tries 'wasm' first, which has no binary served by this app
+ * (only MediaPipe's own wasm runtime is hosted, under /mediapipe/wasm) and fails with "highest
+ * priority backend 'wasm' has not yet been initialized". Note setBackend() resolves a boolean
+ * success flag rather than throwing on failure, so a silent webgl failure must be checked
+ * explicitly — otherwise the following ready() falls through to that same broken auto-select.
+ */
+async function ensureBackend(): Promise<void> {
+  const webglOk = await tf.setBackend('webgl').catch(() => false);
+  if (!webglOk) {
+    await tf.setBackend('cpu');
+  }
+  await tf.ready();
+}
+
 /** Loads the face-api.js identity models once (memoized) from same-origin /models — never a CDN. */
 export function loadFaceModels(): Promise<void> {
   if (!modelsPromise) {
-    modelsPromise = Promise.all([
-      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-      faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
-      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-    ]).then(() => undefined);
+    modelsPromise = ensureBackend()
+      .then(() =>
+        Promise.all([
+          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+          faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
+          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        ]),
+      )
+      .then(() => undefined);
   }
   return modelsPromise;
 }
