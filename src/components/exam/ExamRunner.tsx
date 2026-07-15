@@ -59,6 +59,10 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
   const streamRef = useRef<MediaStream | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const strikeTracker = useRef(createStrikeTracker());
+  // Dedicated, faster-confirming tracker for NO_FACE only (2 consecutive checks ≈ 2s instead of
+  // the shared 3s debounce) — the 3-cancellation-warnings feature should feel responsive rather
+  // than needing a full 3s stare-down before the very first warning even shows.
+  const noFaceStrikeTracker = useRef(createStrikeTracker(2));
   const violationPolicy = useRef(createViolationPolicy());
   const noFaceCount = useRef(0);
   const presenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -168,11 +172,11 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
         if (frame.faceCount === 0) {
           strikeTracker.current.clear('MULTIPLE_FACES');
           strikeTracker.current.clear('LOOKING_AWAY');
-          const confirmed = strikeTracker.current.strike('NO_FACE');
+          const confirmed = noFaceStrikeTracker.current.strike('NO_FACE');
           if (confirmed) recordViolation(confirmed);
           return;
         }
-        strikeTracker.current.clear('NO_FACE');
+        noFaceStrikeTracker.current.clear('NO_FACE');
 
         if (frame.faceCount > 1) {
           const confirmed = strikeTracker.current.strike('MULTIPLE_FACES');

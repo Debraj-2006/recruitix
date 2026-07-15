@@ -57,6 +57,11 @@ const LiveInterviewRound = ({ sessionId, onSubmit }: LiveInterviewRoundProps) =>
   const [errorMessage, setErrorMessage] = useState('');
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  // True while the candidate intends to still be recording — distinguishes a deliberate
+  // stopRecording() from the browser silently ending recognition on its own (a known Chrome
+  // quirk even with continuous:true, especially after a short pause in speech), so onend can
+  // tell whether to auto-restart or leave it stopped.
+  const shouldKeepListeningRef = useRef(false);
 
   const askQuestion = async (text: string, complete: boolean) => {
     setCurrentQuestion(text);
@@ -94,6 +99,7 @@ const LiveInterviewRound = ({ sessionId, onSubmit }: LiveInterviewRoundProps) =>
 
     return () => {
       cancelled = true;
+      shouldKeepListeningRef.current = false;
       window.speechSynthesis?.cancel();
       recognitionRef.current?.stop();
     };
@@ -124,14 +130,36 @@ const LiveInterviewRound = ({ sessionId, onSubmit }: LiveInterviewRoundProps) =>
       }
       setLiveTranscript((finalText + interim).trim());
     };
-    recognition.onerror = () => setPhase('ready');
 
+    // Most errors here are transient (e.g. 'no-speech' fires constantly during a normal pause
+    // to think) and are recoverable via the onend auto-restart below — only bail out to 'ready'
+    // on errors that mean recognition genuinely cannot continue.
+    const FATAL_ERRORS = new Set(['not-allowed', 'audio-capture', 'service-not-allowed']);
+    recognition.onerror = (event) => {
+      if (FATAL_ERRORS.has(event.error)) {
+        shouldKeepListeningRef.current = false;
+        setPhase('ready');
+      }
+    };
+
+    recognition.onend = () => {
+      if (shouldKeepListeningRef.current) {
+        try {
+          recognition.start();
+        } catch {
+          // Already starting/started — the browser will settle on its own; next onend retries.
+        }
+      }
+    };
+
+    shouldKeepListeningRef.current = true;
     recognitionRef.current = recognition;
     recognition.start();
     setPhase('recording');
   };
 
   const stopRecording = async () => {
+    shouldKeepListeningRef.current = false;
     recognitionRef.current?.stop();
     recognitionRef.current = null;
 
