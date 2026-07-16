@@ -29,13 +29,30 @@ const Index = () => {
   const [adminCredentials, setAdminCredentials] = useState({ id: '', password: '' });
   const [loginError, setLoginError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  // Only true once the candidate has explicitly clicked "Start Assessment" (or just
+  // signed in) — keeps a stale token in localStorage from skipping the landing page.
+  const [candidateSessionActive, setCandidateSessionActive] = useState(false);
 
   // Candidate identity/session lives in a JWT (localStorage) + the Express API's /auth/me.
   const { profile: candidateProfile, loading: authLoading, refreshProfile } = useAuthProfile();
 
+  const handleStartAssessment = () => {
+    if (getToken()) {
+      setCandidateSessionActive(true);
+    } else {
+      setShowAuth(true);
+    }
+  };
+
+  const handleCandidateAuthenticated = async () => {
+    await refreshProfile();
+    setCandidateSessionActive(true);
+  };
+
   const handleCandidateLogout = () => {
     clearToken();
     setShowAuth(false);
+    setCandidateSessionActive(false);
     refreshProfile();
   };
 
@@ -76,7 +93,7 @@ const Index = () => {
   // Mandatory face-enrollment gate: a signed-in candidate cannot reach any other screen
   // until faceEnrolled is true — no skip path. getToken() (synchronous) gates on whether a
   // JWT exists at all; authLoading covers the async /auth/me round-trip that resolves it.
-  if (getToken()) {
+  if (candidateSessionActive && getToken()) {
     if (authLoading) {
       return (
         <div className="min-h-screen bg-black flex items-center justify-center">
@@ -95,7 +112,7 @@ const Index = () => {
   }
 
   if (showAuth) {
-    return <AuthGate onBack={() => setShowAuth(false)} onAuthenticated={refreshProfile} />;
+    return <AuthGate onBack={() => setShowAuth(false)} onAuthenticated={handleCandidateAuthenticated} />;
   }
 
   if (userType === 'recruiter') {
@@ -283,7 +300,7 @@ const Index = () => {
                 
                 <Button 
                   className="w-full bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-100 font-semibold py-3 rounded-xl transition-all duration-300"
-                  onClick={() => setShowAuth(true)}
+                  onClick={handleStartAssessment}
                 >
                   Start Assessment
                   <ArrowRight className="w-4 h-4 ml-2" />
