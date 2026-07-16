@@ -323,15 +323,23 @@ router.post('/sessions/:id/violations', requireAuth, loadOwnedSession, asyncHand
 
   let snapshotFileId = null;
   if (snapshotBase64) {
-    const bucket = await getSnapshotBucket();
-    const buffer = Buffer.from(snapshotBase64, 'base64');
-    const uploadStream = bucket.openUploadStream(`${req.session.userId}_${req.session._id}_${Date.now()}.jpg`, {
-      contentType: 'image/jpeg',
-    });
-    await new Promise((resolve, reject) => {
-      uploadStream.end(buffer, (err) => (err ? reject(err) : resolve()));
-    });
-    snapshotFileId = uploadStream.id;
+    // A snapshot upload failure must not cost the candidate their proctoring record — the flag
+    // itself (and the integrity-score deduction) is what matters for scoring; the image is
+    // supplementary evidence, so its failure is logged and swallowed rather than aborting the
+    // whole violation write below.
+    try {
+      const bucket = await getSnapshotBucket();
+      const buffer = Buffer.from(snapshotBase64, 'base64');
+      const uploadStream = bucket.openUploadStream(`${req.session.userId}_${req.session._id}_${Date.now()}.jpg`, {
+        contentType: 'image/jpeg',
+      });
+      await new Promise((resolve, reject) => {
+        uploadStream.end(buffer, (err) => (err ? reject(err) : resolve()));
+      });
+      snapshotFileId = uploadStream.id;
+    } catch (err) {
+      console.error('Violation snapshot upload failed:', err);
+    }
   }
 
   await req.db.collection('violations').insertOne({
@@ -344,7 +352,11 @@ router.post('/sessions/:id/violations', requireAuth, loadOwnedSession, asyncHand
     createdAt: new Date(),
   });
 
-  res.status(201).json({ ok: true });
+  const deduction = severity === 'critical' ? 15 : 5;
+  const integrityScore = Math.max(0, (req.session.integrityScore ?? 100) - deduction);
+  await req.db.collection('examSessions').updateOne({ _id: req.session._id }, { $set: { integrityScore } });
+
+  res.status(201).json({ ok: true, integrityScore });
 }));
 
 export default router;

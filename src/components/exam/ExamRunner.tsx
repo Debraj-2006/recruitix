@@ -96,12 +96,14 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
 
         if (!canvasRef.current) canvasRef.current = document.createElement('canvas');
         const snapshotBase64 = videoRef.current ? captureBase64Jpeg(videoRef.current, canvasRef.current) : null;
+        // A transient failure here must not silently drop the strike count towards cancellation
+        // below — log it and keep going rather than letting the throw skip the rest of this fn.
         await apiPost(`/api/exam/sessions/${sessionId}/violations`, {
           type: violation.type,
           severity: violation.severity,
           message: displayed.message,
           snapshotBase64,
-        });
+        }).catch((err) => console.error('Failed to persist violation:', err));
 
         if (cancelling) {
           endedRef.current = true;
@@ -122,7 +124,7 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
         severity: violation.severity,
         message: violation.message,
         snapshotBase64,
-      });
+      }).catch((err) => console.error('Failed to persist violation:', err));
 
       const policyResult = violationPolicy.current.record();
       if (policyResult.shouldAutoSubmit) {
