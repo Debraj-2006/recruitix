@@ -43,11 +43,14 @@ export function createStrikeTracker(strikesRequired = STRIKES_TO_CONFIRM): Strik
 
   function strike(type: ViolationType): ConfirmedViolation | null {
     const next = (strikes.get(type) ?? 0) + 1;
-    strikes.set(type, next);
-    // Fires exactly once per continuous bad streak, not on every check past the threshold.
-    if (next === strikesRequired) {
+    // Resets on confirmation (rather than latching) so a violation that never clears — e.g. the
+    // candidate walks away and never comes back — keeps re-confirming every `strikesRequired`
+    // checks instead of firing exactly once and then going silent for the rest of the exam.
+    if (next >= strikesRequired) {
+      strikes.set(type, 0);
       return { type, severity: SEVERITY[type], message: MESSAGES[type] };
     }
+    strikes.set(type, next);
     return null;
   }
 

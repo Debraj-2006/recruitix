@@ -170,6 +170,10 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
       presenceIntervalRef.current = setInterval(() => {
         if (!videoRef.current || endedRef.current) return;
         const frame = detectFrame(landmarker, videoRef.current, performance.now());
+        // Not a real reading (video frame not decoded yet, or the detector hit a transient
+        // error) — skip this tick's strike/clear bookkeeping entirely rather than letting it
+        // count as either a pass or a fail.
+        if (!frame.ok) return;
 
         if (frame.faceCount === 0) {
           strikeTracker.current.clear('MULTIPLE_FACES');
