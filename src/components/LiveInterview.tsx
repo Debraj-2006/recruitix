@@ -6,6 +6,7 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { ArrowLeft, Video, Eye, AlertCircle, Clock, Mic, MicOff, ChevronLeft, ChevronRight, Shield, Zap, Brain, Code2, AlertTriangle } from 'lucide-react';
 import { MonitoringData, MonitoringProfile, monitoringProfiles, createParameterizedMonitoringTest, getMonitoringProfile } from '@/utils/monitoringProfiles';
+import { createStrikeTracker, createViolationPolicy, type ConfirmedViolation } from '@/utils/proctorEngine';
 
 interface LiveInterviewProps {
   onComplete: (score: number) => void;
@@ -172,6 +173,44 @@ const LiveInterview = ({ onComplete, onBack }: LiveInterviewProps) => {
   const [integrityScore, setIntegrityScore] = useState<number>(100);
   const [startTime] = useState(Date.now());
 
+  // Confirm-on-N-consecutive-checks trackers (mirrors proctorEngine.ts, used by the real
+  // MediaPipe proctoring path) — replaces the old `currentTime % N === 0` checks, which double-fired
+  // whenever two 500ms ticks landed in the same modulo bucket and never distinguished "one bad frame"
+  // from "sustained bad state".
+  const strikeTracker = useRef(createStrikeTracker()); // MULTIPLE_FACES, LOOKING_AWAY, TAB_HIDDEN
+  // Dedicated tracker for NO_FACE: 20 consecutive checks at the 500ms poll rate below ≈ 10s,
+  // matching the "No face visible for >10 seconds = Disqualification" rule shown on the start screen.
+  const noFaceStrikeTracker = useRef(createStrikeTracker(20));
+  const noFaceWarningTracker = useRef(createStrikeTracker(2)); // early, non-fatal "moved away" warning
+  const violationPolicy = useRef(createViolationPolicy());
+  const isPageVisibleRef = useRef(isPageVisible);
+  const lastFlagRef = useRef<Record<string, number>>({});
+
+  // handleWindowBlur/handleVisibilityChange are registered once per interview start (effect deps
+  // don't include isPageVisible), so they'd otherwise close over a stale value from mount time.
+  useEffect(() => {
+    isPageVisibleRef.current = isPageVisible;
+  }, [isPageVisible]);
+
+  // Time-based cooldown for the profile-specific meta-heuristics below (suspicious activity) that
+  // don't map onto proctorEngine's real violation taxonomy, so they don't get a strike tracker.
+  const canFlag = (key: string, cooldownMs: number) => {
+    const now = Date.now();
+    if (now - (lastFlagRef.current[key] ?? 0) < cooldownMs) return false;
+    lastFlagRef.current[key] = now;
+    return true;
+  };
+
+  const recordConfirmed = (violation: ConfirmedViolation) => {
+    flagViolation(violation.message, violation.severity);
+    if (violation.severity === 'critical' && !isDisqualified) {
+      const result = violationPolicy.current.record();
+      if (result.shouldAutoSubmit) {
+        handleDisqualification('Repeated critical proctoring violations exceeded the allowed threshold');
+      }
+    }
+  };
+
   // Force update monitoring data when page visibility changes (not window focus)
   useEffect(() => {
     if (isStarted && !isPageVisible) {
@@ -255,37 +294,48 @@ const LiveInterview = ({ onComplete, onBack }: LiveInterviewProps) => {
       }
     }
 
-    // Real-time violation detection
+    // Real-time violation detection — confirm on sustained state via strike trackers instead of
+    // time-modulo sampling (see trackers declared above for why).
+    if (isDisqualified) return;
+
     if (newMonitoringData.faceCount > 1) {
-      if (currentTime % 2 === 0) { // More frequent flagging for critical violations
+      const confirmed = strikeTracker.current.strike('MULTIPLE_FACES');
+      if (confirmed) {
+        // "Multiple faces detected = Immediate disqualification" (start screen) — the strike
+        // requirement (3 consecutive ~500ms checks) exists only to absorb a single noisy frame,
+        // not to give the candidate a grace period.
         flagViolation(`${newMonitoringData.faceCount} faces detected - potential cheating`, 'critical');
+        handleDisqualification('Multiple faces detected in frame');
       }
+    } else {
+      strikeTracker.current.clear('MULTIPLE_FACES');
     }
 
     if (newMonitoringData.eyeTracking === 'alert' && newMonitoringData.faceCount > 0) {
-      if (currentTime % 6 === 0) {
-        flagViolation('Eyes not focused on screen - looking elsewhere', 'warning');
-      }
+      const confirmed = strikeTracker.current.strike('LOOKING_AWAY');
+      // Warning only — "Eye tracking violations are monitored only" (start screen).
+      if (confirmed) flagViolation('Eyes not focused on screen - looking elsewhere', 'warning');
+    } else {
+      strikeTracker.current.clear('LOOKING_AWAY');
     }
 
     if (newMonitoringData.faceVisibility === 'not_visible' && isPageVisible) {
-      if (currentTime % 8 === 0) {
-        flagViolation('Face not visible - candidate may have moved away', 'warning');
-      }
+      const warned = noFaceWarningTracker.current.strike('NO_FACE');
+      if (warned) flagViolation('Face not visible - candidate may have moved away', 'warning');
+
+      // "No face visible for >10 seconds = Disqualification" (start screen).
+      const confirmed = noFaceStrikeTracker.current.strike('NO_FACE');
+      if (confirmed) handleDisqualification('Face not visible for more than 10 seconds');
+    } else {
+      noFaceWarningTracker.current.clear('NO_FACE');
+      noFaceStrikeTracker.current.clear('NO_FACE');
     }
 
-    // Suspicious activity detection
-    if (suspiciousActivity > 5) {
-      if (currentTime % 15 === 0) {
-        flagViolation('Multiple suspicious activities detected', 'critical');
-      }
-    }
-
-    // Focus loss tracking
-    if (focusLossCount > 3) {
-      if (currentTime % 20 === 0) {
-        flagViolation(`Frequent tab switching detected (${focusLossCount} times)`, 'critical');
-      }
+    // Suspicious activity detection — profile-specific heuristic with no equivalent in
+    // proctorEngine's real violation taxonomy, so it uses the plain time-cooldown instead of a
+    // strike tracker.
+    if (suspiciousActivity > 5 && canFlag('suspicious_activity', 15000)) {
+      recordConfirmed({ type: 'IDENTITY_MISMATCH', severity: 'critical', message: 'Multiple suspicious activities detected' });
     }
 
     // Always update monitoring data
@@ -302,11 +352,9 @@ const LiveInterview = ({ onComplete, onBack }: LiveInterviewProps) => {
       `[${currentTime}s] ${tabStatus} ${typingStatus} ${suspiciousStatus} | 👁️${newMonitoringData.eyeTracking} 👤${newMonitoringData.faceCount} 📷${newMonitoringData.faceVisibility}`
       ]);
     }
-
-    // Tab switching violations
-    if (!isPageVisible && currentTime % 3 === 0) {
-      flagViolation('Tab switched away from interview', 'critical');
-    }
+    // Tab-hidden is flagged once per edge transition by handleVisibilityChange below, not
+    // polled here — polling it too caused every tab switch to log two "critical" violations
+    // (one from the event, one from this loop) and double-deduct the integrity score.
   };
 
   useEffect(() => {
@@ -324,9 +372,11 @@ const LiveInterview = ({ onComplete, onBack }: LiveInterviewProps) => {
       const handleVisibilityChange = () => {
         const isVisible = !document.hidden;
         setIsPageVisible(isVisible);
+        isPageVisibleRef.current = isVisible;
 
         if (!isVisible) {
-          flagViolation('Browser tab switched away from interview', 'critical');
+          setFocusLossCount(prev => prev + 1);
+          recordConfirmed({ type: 'TAB_HIDDEN', severity: 'critical', message: 'Browser tab switched away from interview' });
           setSimulationLog(prev => [...prev, `[${Math.floor((Date.now() - startTime) / 1000)}s] 🔴 Tab became inactive`]);
         } else {
           setSimulationLog(prev => [...prev, `[${Math.floor((Date.now() - startTime) / 1000)}s] 🟢 Tab became active`]);
@@ -335,8 +385,10 @@ const LiveInterview = ({ onComplete, onBack }: LiveInterviewProps) => {
 
       const handleWindowBlur = () => {
         setIsWindowFocused(false);
-        // Only flag as warning, don't affect main monitoring
-        if (isPageVisible) { // Only if tab is still visible
+        // Read the ref, not the isPageVisible closure var below — this listener is registered
+        // once per interview start (effect deps don't include isPageVisible), so the plain
+        // variable would freeze at whatever it was when the effect last ran.
+        if (isPageVisibleRef.current) {
           flagViolation('Window lost focus - possible distraction', 'warning');
         }
       };
@@ -432,6 +484,21 @@ const LiveInterview = ({ onComplete, onBack }: LiveInterviewProps) => {
     }
     return `🚨 ${monitoringData.faceCount} Faces Detected`;
   };
+
+  if (isDisqualified) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-red-950 via-black to-red-950 flex items-center justify-center p-4">
+        <div className="relative backdrop-blur-xl bg-white/10 border border-red-500/30 rounded-3xl p-8 max-w-lg w-full shadow-2xl text-center space-y-4">
+          <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto">
+            <AlertCircle className="w-8 h-8 text-red-400" />
+          </div>
+          <h1 className="text-3xl font-bold text-red-300">Interview Terminated</h1>
+          <p className="text-red-200/80">{disqualificationReason}</p>
+          <p className="text-white/50 text-sm">Submitting your results...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (showResults) {
     const { totalScore, maxScore } = calculateScore();
