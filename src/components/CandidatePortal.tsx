@@ -8,6 +8,7 @@ import { User, BookOpen, Video, MessageSquare, Trophy, ArrowLeft, Play } from 'l
 import TechnicalRound from './TechnicalRound';
 import LiveInterview from './LiveInterview';
 import HRSimulation from './HRSimulation';
+import { ProctoringSetup } from './exam/ProctoringSetup';
 
 interface CandidatePortalProps {
   onBack: () => void;
@@ -20,6 +21,8 @@ const CandidatePortal = ({ onBack, userInfo }: CandidatePortalProps) => {
   const [scores, setScores] = useState<{ [key: string]: { score: number; percentage: number } }>({});
   const [showLiveInterview, setShowLiveInterview] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
+  const [isProctoringReady, setIsProctoringReady] = useState(false);
+  const [sessionId] = useState(() => Math.random().toString(36).substring(2, 15));
 
   // Auto-navigate to interview on first login (biometric auth completion)
   useEffect(() => {
@@ -67,6 +70,18 @@ const CandidatePortal = ({ onBack, userInfo }: CandidatePortalProps) => {
       hoverColor: 'hover:bg-purple-600'
     }
   ];
+
+  if (!isProctoringReady) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center p-6">
+        <ProctoringSetup 
+          sessionId={sessionId} 
+          userId={userInfo?.uid || 'anonymous'} 
+          onComplete={() => setIsProctoringReady(true)} 
+        />
+      </div>
+    );
+  }
 
   if (currentRound === 'technical') {
       return <TechnicalRound onComplete={handleRoundComplete} onBack={() => setCurrentRound('dashboard')} />;

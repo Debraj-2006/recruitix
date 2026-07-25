@@ -5,19 +5,22 @@ import { UserCheck } from 'lucide-react';
 import CompanySelect, { type Company } from './CompanySelect';
 import ExamTypeSelect from './ExamTypeSelect';
 import ExamFaceGate from './ExamFaceGate';
+import DeviceSetupGate from './DeviceSetupGate';
 import ExamRunner from './ExamRunner';
 
 interface CandidateFlowProps {
   onBack: () => void;
 }
 
-type Step = 'select_company' | 'select_exam_type' | 'face_gate' | 'manual_review' | 'exam';
+type Step = 'select_company' | 'select_exam_type' | 'face_gate' | 'device_setup' | 'manual_review' | 'exam';
 
 /** Orchestrates company selection -> exam type selection -> face+liveness gate -> proctored exam. */
 const CandidateFlow = ({ onBack }: CandidateFlowProps) => {
   const [step, setStep] = useState<Step>('select_company');
   const [company, setCompany] = useState<Company | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const [micStream, setMicStream] = useState<MediaStream | null>(null);
 
   if (step === 'select_company') {
     return (
@@ -48,8 +51,21 @@ const CandidateFlow = ({ onBack }: CandidateFlowProps) => {
     return (
       <ExamFaceGate
         sessionId={sessionId}
-        onUnlocked={() => setStep('exam')}
+        onUnlocked={() => setStep('device_setup')}
         onManualReview={() => setStep('manual_review')}
+        onCancel={() => setStep('select_company')}
+      />
+    );
+  }
+
+  if (step === 'device_setup') {
+    return (
+      <DeviceSetupGate
+        onReady={({ screenStream, micStream }) => {
+          setScreenStream(screenStream);
+          setMicStream(micStream);
+          setStep('exam');
+        }}
         onCancel={() => setStep('select_company')}
       />
     );
@@ -77,8 +93,8 @@ const CandidateFlow = ({ onBack }: CandidateFlowProps) => {
     );
   }
 
-  if (step === 'exam' && sessionId) {
-    return <ExamRunner sessionId={sessionId} onExamComplete={onBack} />;
+  if (step === 'exam' && sessionId && screenStream && micStream) {
+    return <ExamRunner sessionId={sessionId} screenStream={screenStream} micStream={micStream} onExamComplete={onBack} />;
   }
 
   return null;

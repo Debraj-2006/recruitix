@@ -106,3 +106,46 @@ const calculateTimeDifference = (timestamp: Timestamp | null): string => {
   if (diffHours < 24) return `${diffHours}h ago`;
   return `${diffDays}d ago`;
 };
+
+export interface ExamViolation {
+  id: string;
+  sessionId: string;
+  userId: string;
+  type: string;
+  message: string;
+  timestamp: Timestamp | null;
+}
+
+export const useExamViolations = () => {
+  const [violations, setViolations] = useState<ExamViolation[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    try {
+      const q = query(collection(db, 'exam_violations'));
+      
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const viols: ExamViolation[] = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        } as ExamViolation));
+        
+        // Sort by timestamp descending
+        viols.sort((a, b) => {
+          const tA = a.timestamp?.toMillis() || 0;
+          const tB = b.timestamp?.toMillis() || 0;
+          return tB - tA;
+        });
+        
+        setViolations(viols);
+        setLoading(false);
+      });
+      
+      return () => unsubscribe();
+    } catch (err) {
+      setLoading(false);
+    }
+  }, []);
+
+  return { violations, loading };
+};

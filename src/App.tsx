@@ -8,6 +8,7 @@ import { ThemeProvider } from "./ThemeProvider";
 
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
+import MobileProctor from "./pages/MobileProctor";
 import ThreeJsBackground from "@/components/ThreeJsBackground";
 import Chatbot from "@/components/Chatbot";
 
@@ -23,6 +24,7 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<Index />} />
+            <Route path="/mobile-proctor" element={<MobileProctor />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

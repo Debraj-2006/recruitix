@@ -5,6 +5,8 @@ import { requireAuth } from '../middleware/auth.js';
 import { isValidEmbedding, euclideanDistance, THRESHOLD } from '../lib/faceMatch.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { generateInterviewerTurn, generateInterviewEvaluation } from '../lib/interviewer.js';
+import { generateTechnicalQuestions, gradeCodingAnswer } from '../lib/technicalRound.js';
+import { severityForType } from '../lib/violations.js';
 
 const router = express.Router();
 
@@ -196,6 +198,108 @@ router.post('/sessions/:id/round-score', requireAuth, loadOwnedSession, asyncHan
   res.json({ ok: true });
 }));
 
+// LLM-generated Technical Assessment (round === 'technical'): a fresh set of MCQ + coding
+// questions is generated per session on first load and persisted to questionBank tagged with
+// this session's id, so re-fetching mid-exam returns the same set instead of a new one. Unlike
+// the static per-company seeded pool, correctAnswer/rubric is never sent to the client — MCQ and
+// coding grading both happen server-side in /technical/submit below.
+router.post('/sessions/:id/technical/start', requireAuth, loadOwnedSession, asyncHandler(async (req, res) => {
+  if (req.session.round !== 'technical') return res.status(400).json({ error: 'invalid_input', detail: 'not a technical session' });
+
+  let docs = await req.db.collection('questionBank').find({ sessionId: req.session._id, round: 'technical' }).toArray();
+
+  if (docs.length === 0) {
+    const generated = await generateTechnicalQuestions();
+    const now = new Date();
+    const toInsert = generated.map((q) => ({
+      ...q,
+      round: 'technical',
+      companyId: req.session.companyId,
+      sessionId: req.session._id,
+      createdAt: now,
+    }));
+    const { insertedIds } = await req.db.collection('questionBank').insertMany(toInsert);
+    docs = toInsert.map((doc, i) => ({ ...doc, _id: insertedIds[i] }));
+  }
+
+  res.json({
+    questions: docs.map((q) => ({
+      id: q._id.toString(),
+      round: q.round,
+      qtype: q.qtype,
+      category: q.category ?? null,
+      prompt: q.prompt,
+      options: q.options ?? null,
+      correctAnswer: null,
+      points: q.points,
+    })),
+  });
+}));
+
+router.post('/sessions/:id/technical/submit', requireAuth, loadOwnedSession, asyncHandler(async (req, res) => {
+  if (req.session.round !== 'technical') return res.status(400).json({ error: 'invalid_input', detail: 'not a technical session' });
+
+  const { answers } = req.body ?? {};
+  if (!answers || typeof answers !== 'object') return res.status(400).json({ error: 'invalid_input' });
+
+  const questions = await req.db.collection('questionBank').find({ sessionId: req.session._id, round: 'technical' }).toArray();
+  if (questions.length === 0) {
+    return res.status(400).json({ error: 'invalid_input', detail: 'technical round was not started' });
+  }
+
+  let earned = 0;
+  let possible = 0;
+  const responseDocs = [];
+
+  for (const q of questions) {
+    const answer = typeof answers[q._id.toString()] === 'string' ? answers[q._id.toString()] : '';
+    possible += q.points;
+
+    let score = 0;
+    if (q.qtype === 'mcq') {
+      score = answer === q.correctAnswer ? q.points : 0;
+    } else if (answer.trim()) {
+      // A grading failure shouldn't fail the whole submission — a zero for that one question is
+      // the safe fallback rather than leaving the candidate's exam stuck mid-submit.
+      try {
+        const { scoreFraction } = await gradeCodingAnswer(q, answer);
+        score = scoreFraction * q.points;
+      } catch (err) {
+        console.error('Technical answer grading failed:', err);
+      }
+    }
+    earned += score;
+
+    responseDocs.push({
+      sessionId: req.session._id,
+      questionId: q._id,
+      round: 'technical',
+      answer,
+      score,
+      createdAt: new Date(),
+    });
+  }
+
+  await req.db.collection('examResponses').insertMany(responseDocs);
+
+  const pct = possible > 0 ? Math.round((earned / possible) * 100) : 0;
+  await req.db.collection('examSessions').updateOne(
+    { _id: req.session._id },
+    {
+      $set: {
+        technicalScore: earned,
+        technicalPct: pct,
+        currentRound: null,
+        status: 'submitted',
+        endedAt: new Date(),
+        overallPct: pct,
+      },
+    },
+  );
+
+  res.json({ score: earned, pct });
+}));
+
 // AI-driven Live Interview (round === 'personal'): a Claude-conducted conversational interview,
 // one question at a time, transcribed by the candidate's browser and spoken back via TTS. The
 // full exchange is persisted in interviewTranscripts so /finish can grade the whole conversation.
@@ -318,8 +422,13 @@ router.get('/sessions/:id/results', requireAuth, loadOwnedSession, asyncHandler(
 }));
 
 router.post('/sessions/:id/violations', requireAuth, loadOwnedSession, asyncHandler(async (req, res) => {
-  const { type, severity, message, snapshotBase64 } = req.body ?? {};
-  if (!type || !severity || !message) return res.status(400).json({ error: 'invalid_input' });
+  const { type, message, snapshotBase64 } = req.body ?? {};
+  if (!type || !message) return res.status(400).json({ error: 'invalid_input' });
+
+  // Severity (and therefore the integrity-score deduction below) is always derived from the
+  // type via the server's own whitelist, never trusted from the client's request body.
+  const severity = severityForType(type);
+  if (!severity) return res.status(400).json({ error: 'invalid_input', detail: `unknown violation type: ${type}` });
 
   let snapshotFileId = null;
   if (snapshotBase64) {

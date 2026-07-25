@@ -5,13 +5,25 @@ import { apiGet, apiPost } from '@/lib/api';
 import { loadFaceModels, getFaceDescriptor } from '@/lib/faceEngine';
 import { loadFaceLandmarker, detectFrame } from '@/lib/faceMesh';
 import { createStrikeTracker, createViolationPolicy, type ConfirmedViolation } from '@/utils/proctorEngine';
-import { fetchRoundQuestions, submitRoundResponses, recordRoundScore, scoreAnswer, EXAM_TYPE_LABELS, type QuestionBankRow, type RoundName } from '@/lib/examRounds';
+import {
+  fetchRoundQuestions,
+  startTechnicalRound,
+  submitTechnicalRound,
+  submitRoundResponses,
+  recordRoundScore,
+  scoreAnswer,
+  EXAM_TYPE_LABELS,
+  type QuestionBankRow,
+  type RoundName,
+} from '@/lib/examRounds';
 import RoundView from './RoundView';
 import LiveInterviewRound from './LiveInterviewRound';
 import ExamResults from './ExamResults';
 
 interface ExamRunnerProps {
   sessionId: string;
+  screenStream: MediaStream;
+  micStream: MediaStream;
   onExamComplete: () => void;
 }
 
@@ -32,6 +44,10 @@ const IDENTITY_CHECK_MS = 8000;
 const MAX_YAW_DEG = 30;
 const MAX_PITCH_DEG = 25;
 const NO_FACE_WARNINGS_BEFORE_CANCEL = 3;
+const AUDIO_CHECK_MS = 1500;
+// 0-255 scale from AnalyserNode.getByteFrequencyData's average — sustained speech/loud noise
+// reliably sits well above ambient room/keyboard noise at this threshold.
+const LOUD_AUDIO_THRESHOLD = 50;
 
 function captureBase64Jpeg(video: HTMLVideoElement, canvas: HTMLCanvasElement): string | null {
   canvas.width = video.videoWidth || 320;
@@ -47,7 +63,7 @@ function captureBase64Jpeg(video: HTMLVideoElement, canvas: HTMLCanvasElement): 
  * Owns the camera + continuous proctoring for the exam session and renders the single exam
  * type (technical/personal/hr) the candidate chose, persisting every answer to examResponses.
  */
-const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
+const ExamRunner = ({ sessionId, screenStream, micStream, onExamComplete }: ExamRunnerProps) => {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [durations, setDurations] = useState<CompanyDurations | null>(null);
   const [questions, setQuestions] = useState<QuestionBankRow[]>([]);
@@ -63,17 +79,25 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
   // the shared 3s debounce) — the 3-cancellation-warnings feature should feel responsive rather
   // than needing a full 3s stare-down before the very first warning even shows.
   const noFaceStrikeTracker = useRef(createStrikeTracker(2));
+  // Own tracker for sustained loud audio, on its own 1.5s cadence rather than the 1s webcam loop.
+  const audioStrikeTracker = useRef(createStrikeTracker());
   const violationPolicy = useRef(createViolationPolicy());
   const noFaceCount = useRef(0);
   const presenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const identityIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const endedRef = useRef(false);
 
   const stopEverything = useCallback(() => {
     if (presenceIntervalRef.current) clearInterval(presenceIntervalRef.current);
     if (identityIntervalRef.current) clearInterval(identityIntervalRef.current);
+    if (audioIntervalRef.current) clearInterval(audioIntervalRef.current);
+    audioContextRef.current?.close().catch(() => {});
     streamRef.current?.getTracks().forEach((t) => t.stop());
-  }, []);
+    screenStream.getTracks().forEach((t) => t.stop());
+    micStream.getTracks().forEach((t) => t.stop());
+  }, [screenStream, micStream]);
 
   const recordViolation = useCallback(
     async (violation: ConfirmedViolation) => {
@@ -216,6 +240,51 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
         }
       }, IDENTITY_CHECK_MS);
 
+      // Screen-share/mic tracks only fire 'ended' when something external stops them (the
+      // browser's own "Stop sharing" bar, OS permission revocation, unplugged device) — not when
+      // our own stopEverything() calls .stop() on them at legitimate exam end, so no endedRef
+      // guard is strictly required here, but it's added anyway as a defensive no-op.
+      const screenTrack = screenStream.getVideoTracks()[0];
+      if (screenTrack) {
+        screenTrack.onended = () => {
+          if (endedRef.current) return;
+          recordViolation({ type: 'SCREEN_SHARE_STOPPED', severity: 'critical', message: 'Screen sharing was stopped.' });
+        };
+      }
+
+      const micTrack = micStream.getAudioTracks()[0];
+      if (micTrack) {
+        micTrack.onended = () => {
+          if (endedRef.current) return;
+          recordViolation({ type: 'MIC_UNAVAILABLE', severity: 'warning', message: 'Microphone access was lost or revoked.' });
+        };
+      }
+
+      if (micTrack) {
+        const AudioContextCtor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        const audioContext = new AudioContextCtor();
+        audioContextRef.current = audioContext;
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        audioContext.createMediaStreamSource(micStream).connect(analyser);
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+        audioIntervalRef.current = setInterval(() => {
+          if (endedRef.current) return;
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+          const average = sum / dataArray.length;
+
+          if (average > LOUD_AUDIO_THRESHOLD) {
+            const confirmed = audioStrikeTracker.current.strike('SUSPICIOUS_AUDIO');
+            if (confirmed) recordViolation(confirmed);
+          } else {
+            audioStrikeTracker.current.clear('SUSPICIOUS_AUDIO');
+          }
+        }, AUDIO_CHECK_MS);
+      }
+
       document.addEventListener('visibilitychange', handleTabHidden);
       if (!cancelled) setLoading(false);
     })();
@@ -230,22 +299,34 @@ const ExamRunner = ({ sessionId, onExamComplete }: ExamRunnerProps) => {
 
   // Fetch this round's questions whenever currentRound changes. The Live Interview round
   // ('personal') is Claude-driven conversation, not question-bank content — nothing to fetch.
+  // Technical questions are LLM-generated fresh per session rather than pulled from the static
+  // per-company seeded bank (HR still uses that static bank).
   useEffect(() => {
     if (!session?.companyId || !session.currentRound || session.currentRound === 'personal') return;
+    if (session.currentRound === 'technical') {
+      startTechnicalRound(sessionId).then(setQuestions);
+      return;
+    }
     fetchRoundQuestions(session.companyId, session.currentRound).then(setQuestions);
-  }, [session?.companyId, session?.currentRound]);
+  }, [sessionId, session?.companyId, session?.currentRound]);
 
   const handleRoundSubmit = async (round: RoundName, result: { score: number; pct: number; answers: Record<string, string> }) => {
-    await submitRoundResponses(
-      sessionId,
-      questions.map((q) => ({
-        questionId: q.id,
-        round,
-        answer: result.answers[q.id] ?? '',
-        score: scoreAnswer(q, result.answers[q.id] ?? ''),
-      })),
-    );
-    await recordRoundScore(sessionId, round, result.score, result.pct);
+    if (round === 'technical') {
+      // Grading (MCQ exact-match and LLM-judged coding answers) happens entirely server-side,
+      // since correctAnswer/rubric was never sent to the client for this round.
+      await submitTechnicalRound(sessionId, result.answers);
+    } else {
+      await submitRoundResponses(
+        sessionId,
+        questions.map((q) => ({
+          questionId: q.id,
+          round,
+          answer: result.answers[q.id] ?? '',
+          score: scoreAnswer(q, result.answers[q.id] ?? ''),
+        })),
+      );
+      await recordRoundScore(sessionId, round, result.score, result.pct);
+    }
 
     const { session: updated } = await apiGet<{ session: SessionInfo }>(`/api/exam/sessions/${sessionId}`);
 

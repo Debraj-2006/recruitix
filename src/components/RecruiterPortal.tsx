@@ -6,8 +6,8 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Progress } from '@/components/ui/progress';
 import { RecruiterStatsPin } from '@/components/ui/recruiter-stats-pin';
-import { ArrowLeft, Users, Settings, BarChart3, Eye, CheckCircle, Clock, AlertTriangle, TrendingUp, UserCheck, Activity, Loader } from 'lucide-react';
-import { useRealtimeUsers, useActiveUserCount } from '@/hooks/useRealtimeUsers';
+import { ArrowLeft, Users, Settings, BarChart3, Eye, CheckCircle, Clock, AlertTriangle, TrendingUp, UserCheck, Activity, Loader, ShieldAlert } from 'lucide-react';
+import { useRealtimeUsers, useActiveUserCount, useExamViolations } from '@/hooks/useRealtimeUsers';
 
 interface RecruiterPortalProps {
   onBack: () => void;
@@ -17,6 +17,7 @@ const RecruiterPortal = ({ onBack }: RecruiterPortalProps) => {
   const [selectedCandidate, setSelectedCandidate] = useState<number | null>(null);
   const { users: activeUsers, loading: usersLoading } = useRealtimeUsers('candidate');
   const { count: totalActiveUsers } = useActiveUserCount();
+  const { violations } = useExamViolations();
 
   // Mock data for assessment scores
   const candidates = [
@@ -202,6 +203,32 @@ const RecruiterPortal = ({ onBack }: RecruiterPortalProps) => {
                           </tbody>
                         </table>
                       </div>
+                      
+                      {violations.length > 0 && (
+                        <div className="mt-8">
+                          <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                            <ShieldAlert className="w-5 h-5 text-red-500" />
+                            Recent Live Violations
+                          </h3>
+                          <div className="space-y-3">
+                            {violations.slice(0, 5).map(violation => (
+                              <div key={violation.id} className="bg-red-500/10 border border-red-500/20 p-4 rounded-lg flex items-start gap-4">
+                                <AlertTriangle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                                <div>
+                                  <div className="flex items-center gap-3 mb-1">
+                                    <span className="font-semibold text-red-400">{violation.type}</span>
+                                    <span className="text-xs text-red-400/70">
+                                      {violation.timestamp ? new Date(violation.timestamp.toMillis()).toLocaleTimeString() : 'Just now'}
+                                    </span>
+                                  </div>
+                                  <p className="text-sm text-red-300">{violation.message}</p>
+                                  <p className="text-xs text-red-400/50 mt-1">Candidate ID: {violation.userId} | Session: {violation.sessionId}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </CardContent>

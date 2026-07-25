@@ -36,6 +36,17 @@ export async function fetchRoundQuestions(companyId: string, round: RoundName): 
   return questions;
 }
 
+/** Technical Assessment: LLM-generated MCQ + coding questions, unique per session. Grading (both
+ *  MCQ and coding) happens server-side in submitTechnicalRound, so correctAnswer always comes back null. */
+export async function startTechnicalRound(sessionId: string): Promise<QuestionBankRow[]> {
+  const { questions } = await apiPost<{ questions: QuestionBankRow[] }>(`/api/exam/sessions/${sessionId}/technical/start`, {});
+  return questions;
+}
+
+export async function submitTechnicalRound(sessionId: string, answers: Record<string, string>): Promise<{ score: number; pct: number }> {
+  return apiPost<{ score: number; pct: number }>(`/api/exam/sessions/${sessionId}/technical/submit`, { answers });
+}
+
 /** MCQ: full points if exact match. Coding/behavioral: semantic-similarity partial credit, weighted by points. */
 export function scoreAnswer(question: QuestionBankRow, answer: string): number {
   if (!answer) return 0;

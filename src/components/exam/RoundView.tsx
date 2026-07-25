@@ -86,7 +86,11 @@ const RoundView = ({ title, durationMin, questions, onSubmit }: RoundViewProps) 
               >
                 {question.options.map((option) => (
                   <div key={option} className="flex items-center space-x-2 py-1">
-                    <RadioGroupItem value={option} id={option} />
+                    <RadioGroupItem
+                      value={option}
+                      id={option}
+                      className="border-slate-400 text-blue-400 focus-visible:ring-blue-500"
+                    />
                     <Label htmlFor={option} className="text-slate-200">{option}</Label>
                   </div>
                 ))}
